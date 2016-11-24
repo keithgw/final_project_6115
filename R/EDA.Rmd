@@ -1,0 +1,133 @@
+---
+title: "Final Project"
+author: "Keith Williams"
+date: "11/23/2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+data_file <- '../data/data_6115.txt'
+dat <- read_delim(data_file, delim = "\t")
+glimpse(dat)
+```
+# Explore  
+```{r}
+# histograms of each variable
+dat %>% 
+    gather("variable", "value") %>% 
+    ggplot(aes(value)) +
+    geom_histogram() +
+    facet_wrap(~variable, nrow = 1, scales = "free_x")
+```
+
+So, the response variable `V1` appears to be normally distributed. `V2` looks somewhat uniform, `V3` and `V4` normal but with different variances, `V5` skewed right, looks maybe poisson, and `V6` looks skweed right between 0 and 1.
+
+```{r}
+# scatter plots vs V1
+dat %>% 
+    gather("predictor", "x", 2:6) %>% 
+    ggplot(aes(x, V1)) + 
+    geom_point() +
+    geom_smooth() +
+    facet_wrap(~predictor, nrow = 1, scales = 'free_x')
+```
+
+Looks like `V2` and `V6` are cubic, while `V3` is quadratic. `V4` and `V5` require more investigation. Is `V5` logarithmic?  
+```{r}
+ggplot(dat, aes(log(V5))) + geom_histogram()
+```
+
+```{r}
+ggplot(dat, aes(log(V5), V1)) + geom_point() + geom_smooth()
+```
+
+Looks like a clearer relationship after log transformation.
+
+```{r}
+# Is V4 dependendent on one of the other variables?
+dat %>% 
+    gather("variable", "value", V2, V3, V5, V6) %>% 
+    ggplot(aes(value, V4)) +
+    geom_point() +
+    geom_smooth() +
+    facet_wrap(~variable, nrow = 1, scales = 'free_x')
+```
+
+Interesting pattern with V3
+
+```{r}
+synth <- dat %>% 
+    mutate(V4_synth = map_dbl(V2, ~rnorm(1, sd = .x))) %>% 
+    ggplot(aes(V2, V4_synth)) +
+    geom_point() +
+    coord_cartesian(ylim = c(-2, 2))
+
+observed <- ggplot(dat, aes(V2, V4)) + geom_point() + coord_cartesian(ylim = c(-2, 2))
+
+gridExtra::grid.arrange(synth, observed)
+```
+
+So `V5` is a quadratic function of `V4`. But it's not just a synthesis from V4 + noise, the error is heteroskedastic, increasing with distance from 0.  
+
+```{r}
+dat %>% 
+    mutate(V5_synth = map_dbl(V4, ~.x^2 + runif(1, max = abs(.x)))) %>% 
+    gather("V", "y", V5, V5_synth) %>%  
+    ggplot(aes(V4, y)) +
+    geom_point() +
+    geom_line(aes(y = V4^2), color = "blue") +
+    facet_wrap(~V)
+```
+
+This isn't quite right, but its close. `V5` is nonnegative, becaue it is the result of a square + some positive random error.
+
+What other correlations exist?  
+```{r}
+    cormat <- dat %>% 
+        cor(use = "complete.obs")
+    cormat[upper.tri(cormat)] <- NA
+    
+    cormat %>% 
+        reshape2::melt(na.rm = TRUE) %>%
+        ggplot(aes(Var2, Var1, fill = value)) +
+        geom_tile(color = 'gray90') +
+        scale_fill_gradient2(low = "#67a9cf", high = "#ef8a62", limit = c(-1, 1), name = "correlation") +
+        coord_equal() +
+        theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+              panel.background = element_blank()) +
+        ggtitle("Correlation Matrix")
+```
+
+`V3` and `V4` are uncorrelated with the response variable.  
+`V2` and `V6` makes sense, since they are both cubic functions
+
+```{r}
+ggplot(dat, aes(V2, V6)) + geom_point() + geom_smooth()
+```
+
+```{r}
+ggplot(dat, aes(V2, V2^2)) + geom_point()
+```
+
+
+### Hypothesis so far  
+- `V2` is a random uniform variable between 0 and 1 simulated from `runif(200)`, `V1` is cubic in `V2`.  
+- `V3` is a random normal variable with mean 0, sd close to 1, but maybe a little less. `V1` is quadratic in `V2`  
+- `V4` is the heteroskedastic error of `V2`, *i.e.* V2 + rnorm(sd = V2)  
+- `V5` is a quadratic function of `V4` + some positive error that is a function of `V4`  
+- `V6` is a quadratic function of `V2` with no random noise added.  
+
+## Basic Model  
+```{r}
+mdl <- lm(V1 ~ poly(V6, 3) + poly(V3, 2), data = dat)
+summary(mdl)
+broom::augment(mdl) %>% 
+    ggplot(aes(.fitted, V1)) +
+    geom_point()
+```
+
