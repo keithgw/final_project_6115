@@ -7,7 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 library(tidyverse)
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
 
 ```{r}
@@ -21,8 +21,8 @@ glimpse(dat)
 dat %>% 
     gather("variable", "value") %>% 
     ggplot(aes(value)) +
-    geom_histogram() +
-    facet_wrap(~variable, nrow = 1, scales = "free_x")
+    geom_histogram(bins = 15) +
+    facet_wrap(~variable, nrow = 1, scales = "free")
 ```
 
 So, the response variable `V1` appears to be normally distributed. `V2` looks somewhat uniform, `V3` and `V4` normal but with different variances, `V5` skewed right, looks maybe poisson, and `V6` looks skweed right between 0 and 1.
@@ -37,42 +37,53 @@ dat %>%
     facet_wrap(~predictor, nrow = 1, scales = 'free_x')
 ```
 
-Looks like `V2` and `V6` are cubic, while `V3` is quadratic. `V4` and `V5` require more investigation. Is `V5` logarithmic?  
+Looks like `V2` and `V6` are cubic, while `V3` is quadratic. `V4` and `V5` require more investigation. Let's look at transformations of `V5`.  
+
 ```{r}
-ggplot(dat, aes(log(V5))) + geom_histogram()
+ggplot(dat, aes(sqrt(V5), V1)) + geom_point() + geom_smooth()
 ```
 
-```{r}
-ggplot(dat, aes(log(V5), V1)) + geom_point() + geom_smooth()
-```
-
-Looks like a clearer relationship after log transformation.
+Looks like a clearer relationship after square root transformation.
 
 ```{r}
-# Is V4 dependendent on one of the other variables?
+# Is V5 dependendent on one of the other variables?
 dat %>% 
-    gather("variable", "value", V2, V3, V5, V6) %>% 
-    ggplot(aes(value, V4)) +
+    gather("variable", "value", V3, V4) %>% 
+    ggplot(aes(value, V5)) +
     geom_point() +
     geom_smooth() +
-    facet_wrap(~variable, nrow = 1, scales = 'free_x')
-```
-
-Interesting pattern with V3
-
-```{r}
-synth <- dat %>% 
-    mutate(V4_synth = map_dbl(V2, ~rnorm(1, sd = .x))) %>% 
-    ggplot(aes(V2, V4_synth)) +
-    geom_point() +
-    coord_cartesian(ylim = c(-2, 2))
-
-observed <- ggplot(dat, aes(V2, V4)) + geom_point() + coord_cartesian(ylim = c(-2, 2))
-
-gridExtra::grid.arrange(synth, observed)
+    facet_wrap(~variable, nrow = 1)
 ```
 
 So `V5` is a quadratic function of `V4`. But it's not just a synthesis from V4 + noise, the error is heteroskedastic, increasing with distance from 0.  
+
+```{r}
+# attempt to make the error constant with differencing
+# Since, V4 is 0 + rnrom(sd = V2), \sigma_e | V2 = V2, therefore
+# one can make the variance constant by dividing V4 by V2 to get a constant error.
+dat %>% 
+    mutate(V4_d = V4 / V2) %>% 
+    ggplot(aes(V2, V4_d)) +
+    geom_point() +
+    geom_smooth(method = "lm")
+```
+
+```{r}
+dat %>% 
+    mutate(V4_d = V4 / V2) %>% 
+    ggplot(aes(V4_d, V1)) +
+    geom_point() + 
+    geom_smooth()
+```
+
+```{r}
+dat %>% 
+    mutate(V4_d = V4 / V2) %>% 
+    ggplot(aes(V3, V4_d)) +
+    geom_point()
+```
+
+So, if $\frac{V_4}{V_2} = V_3$, then $V_4 = V_3V_2$
 
 ```{r}
 dat %>% 
@@ -96,6 +107,7 @@ What other correlations exist?
         reshape2::melt(na.rm = TRUE) %>%
         ggplot(aes(Var2, Var1, fill = value)) +
         geom_tile(color = 'gray90') +
+        geom_text(aes(label = round(value, 3))) +
         scale_fill_gradient2(low = "#67a9cf", high = "#ef8a62", limit = c(-1, 1), name = "correlation") +
         coord_equal() +
         theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
@@ -111,22 +123,38 @@ ggplot(dat, aes(V2, V6)) + geom_point() + geom_smooth()
 ```
 
 ```{r}
-ggplot(dat, aes(V2, V2^2)) + geom_point()
+ggplot(dat, aes(V2^2, V6)) + geom_point()
 ```
 
 
 ### Hypothesis so far  
 - `V2` is a random uniform variable between 0 and 1 simulated from `runif(200)`, `V1` is cubic in `V2`.  
-- `V3` is a random normal variable with mean 0, sd close to 1, but maybe a little less. `V1` is quadratic in `V2`  
+- `V3` is a random normal variable with mean 0, sd close to 1, but maybe a little less. `V1` is quadratic in `V3`  
 - `V4` is the heteroskedastic error of `V2`, *i.e.* V2 + rnorm(sd = V2)  
+    + It only seems this way, because `V4` is the product of `V2` and `V3`
 - `V5` is a quadratic function of `V4` + some positive error that is a function of `V4`  
 - `V6` is a quadratic function of `V2` with no random noise added.  
+
+So, we can relabel our data set:  
+- `V2` random uniform  
+- `V3` random normal  
+- `V4` = `V2 * V3`  
+- `V5` = `V4^2 + e`  
+- `V6` = `V2^2`
 
 ## Basic Model  
 ```{r}
 mdl <- lm(V1 ~ poly(V6, 3) + poly(V3, 2), data = dat)
 summary(mdl)
 broom::augment(mdl) %>% 
+    ggplot(aes(.fitted, V1)) +
+    geom_point()
+```
+
+```{r}
+mdl2 <- lm(V1 ~ poly(V2, 6) + poly(V3, 2), data = dat)
+summary(mdl2)
+broom::augment(mdl2) %>% 
     ggplot(aes(.fitted, V1)) +
     geom_point()
 ```
