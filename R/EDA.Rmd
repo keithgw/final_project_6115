@@ -7,7 +7,8 @@ output: html_document
 
 ```{r setup, include=FALSE}
 library(tidyverse)
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      fig.width = 10)
 ```
 
 ```{r}
@@ -15,6 +16,63 @@ data_file <- '../data/data_6115.txt'
 dat <- read_delim(data_file, delim = "\t")
 glimpse(dat)
 ```
+
+# 1.  
+**Write the dataset to a file in excel format**  
+
+```{r}
+# note: dir.exists() requires R > 3.2.0
+data_path <- '../data'
+out_filename <- 'out_data.csv'
+if (!dir.exists(data_path)) {
+    dir.create(data_path)
+}
+write.csv(dat, file.path(data_path, out_filename))
+```
+
+# 2.  
+**Find the sample correlation between the response and each of the covariates**  
+
+```{r}
+cormat <- dat %>% 
+    cor(use = "complete.obs")
+cormat[upper.tri(cormat)] <- NA
+
+cormat %>% 
+    reshape2::melt(na.rm = TRUE) %>%
+    ggplot(aes(Var2, Var1, fill = value)) +
+    geom_tile(color = 'gray90') +
+    geom_text(aes(label = round(value, 3))) +
+    scale_fill_gradient2(low = "#67a9cf", 
+                         high = "#ef8a62", 
+                         limit = c(-1, 1), 
+                         name = "correlation") +
+    coord_equal() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+          panel.background = element_blank()) +
+    ggtitle("Correlation Matrix")
+    
+# print just V1 correlations
+cormat[2:6, 1]
+```
+
+#3.  
+**Propose an initial model to fit the dataset**  
+
+```{r}
+linear_model <- lm(V1 ~ ., data = dat)
+summary(linear_model)
+
+broom::augment(linear_model) %>% 
+    ggplot(aes(.fitted, V1)) +
+    geom_point(alpha = 0.6) +
+    geom_abline(slope = 1, intercept = 0, color = "blue") +
+    labs(x = "fitted values", 
+         title = "Linear Model all variables")
+```
+
+Not surprisingly, the three variables most correlated with `V1` yield significant coefficient estimates. The $R^2$ value is 0.6916, which should be improved.  
+
 # Explore  
 ```{r}
 # histograms of each variable
@@ -29,11 +87,12 @@ So, the response variable `V1` appears to be normally distributed. `V2` looks so
 
 ```{r}
 # scatter plots vs V1
+# fit loess smoothing to each plot
 dat %>% 
     gather("predictor", "x", 2:6) %>% 
     ggplot(aes(x, V1)) + 
     geom_point() +
-    geom_smooth() +
+    geom_smooth(method = "loess") +
     facet_wrap(~predictor, nrow = 1, scales = 'free_x')
 ```
 
@@ -52,38 +111,10 @@ dat %>%
     ggplot(aes(value, V5)) +
     geom_point() +
     geom_smooth() +
-    facet_wrap(~variable, nrow = 1)
+    facet_wrap(~variable, nrow = 1, scales = "free_x")
 ```
 
-So `V5` is a quadratic function of `V4`. But it's not just a synthesis from V4 + noise, the error is heteroskedastic, increasing with distance from 0.  
-
-```{r}
-# attempt to make the error constant with differencing
-# Since, V4 is 0 + rnrom(sd = V2), \sigma_e | V2 = V2, therefore
-# one can make the variance constant by dividing V4 by V2 to get a constant error.
-dat %>% 
-    mutate(V4_d = V4 / V2) %>% 
-    ggplot(aes(V2, V4_d)) +
-    geom_point() +
-    geom_smooth(method = "lm")
-```
-
-```{r}
-dat %>% 
-    mutate(V4_d = V4 / V2) %>% 
-    ggplot(aes(V4_d, V1)) +
-    geom_point() + 
-    geom_smooth()
-```
-
-```{r}
-dat %>% 
-    mutate(V4_d = V4 / V2) %>% 
-    ggplot(aes(V3, V4_d)) +
-    geom_point()
-```
-
-So, if $\frac{V_4}{V_2} = V_3$, then $V_4 = V_3V_2$
+Looks like `V5` might be a quadratic function of `V4` plus heteroskedastic error. Try to simulate this result.  
 
 ```{r}
 dat %>% 
@@ -92,70 +123,97 @@ dat %>%
     ggplot(aes(V4, y)) +
     geom_point() +
     geom_line(aes(y = V4^2), color = "blue") +
-    facet_wrap(~V)
+    facet_wrap(~V) +
+    labs(title = "Actual V5 and attempt to recreate V5",
+         subtitle = "Blue line represents V4^2")
 ```
 
 This isn't quite right, but its close. `V5` is nonnegative, becaue it is the result of a square + some positive random error.
 
-What other correlations exist?  
+So `V5` is a quadratic function of `V4`. But it's not just a synthesis from V4 + noise, the error is heteroskedastic, increasing with distance from 0. Next, investigate `V4`  
+
 ```{r}
-    cormat <- dat %>% 
-        cor(use = "complete.obs")
-    cormat[upper.tri(cormat)] <- NA
-    
-    cormat %>% 
-        reshape2::melt(na.rm = TRUE) %>%
-        ggplot(aes(Var2, Var1, fill = value)) +
-        geom_tile(color = 'gray90') +
-        geom_text(aes(label = round(value, 3))) +
-        scale_fill_gradient2(low = "#67a9cf", high = "#ef8a62", limit = c(-1, 1), name = "correlation") +
-        coord_equal() +
-        theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
-              panel.background = element_blank()) +
-        ggtitle("Correlation Matrix")
+# hypothesis that V4 = V3 * V2
+dat %>% 
+    mutate(V4_div_V2 = V4 / V2) %>% 
+    gather("predictor", "value", V3, V4_div_V2) %>% 
+    ggplot(aes(value, V1)) +
+    geom_point() + 
+    geom_smooth(method = "loess") +
+    facet_wrap(~predictor) +
+    labs(title = "V1 vs V3 and V4 / V2",
+         subtitle = "Plots identitical")
 ```
 
-`V3` and `V4` are uncorrelated with the response variable.  
-`V2` and `V6` makes sense, since they are both cubic functions
+```{r}
+# show that V3 = V4 / V2
+dat %>% 
+    mutate(V4_div_V2 = V4 / V2) %>% 
+    ggplot(aes(V3, V4_div_V2)) +
+    geom_abline(slope = 1, intercept = 0, color = 'blue', linetype = "dashed") +
+    geom_point() +
+    labs(y = "V4 / V2",
+         title = "V4 = V3 * V2")
+```
 
+So, if $\frac{V_4}{V_2} = V_3$, then $V_4 = V_3V_2$
+
+`V6` appears to be a transformation of `V2`  
 ```{r}
 ggplot(dat, aes(V2, V6)) + geom_point() + geom_smooth()
 ```
 
+Test hypothesis that `V6` is a quadratic function of `V2`
+
 ```{r}
-ggplot(dat, aes(V2^2, V6)) + geom_point()
+ggplot(dat, aes(V2^2, V6)) + 
+    geom_abline(slope = 1, intercept = 0, color = 'blue', linetype = 'dashed') +
+    geom_point() +
+    labs(title = "V2^2 vs V6",
+         subtitle = "y = x")
 ```
 
+So, $V6 = V2^2$  
 
 ### Hypothesis so far  
-- `V2` is a random uniform variable between 0 and 1 simulated from `runif(200)`, `V1` is cubic in `V2`.  
-- `V3` is a random normal variable with mean 0, sd close to 1, but maybe a little less. `V1` is quadratic in `V3`  
-- `V4` is the heteroskedastic error of `V2`, *i.e.* V2 + rnorm(sd = V2)  
-    + It only seems this way, because `V4` is the product of `V2` and `V3`
-- `V5` is a quadratic function of `V4` + some positive error that is a function of `V4`  
-- `V6` is a quadratic function of `V2` with no random noise added.  
-
 So, we can relabel our data set:  
 - `V2` random uniform  
 - `V3` random normal  
 - `V4` = `V2 * V3`  
 - `V5` = `V4^2 + e`  
-- `V6` = `V2^2`
+- `V6` = `V2^2`  
 
-## Basic Model  
+# 4.  
+**Refined model based on exploratory analysis**  
+
 ```{r}
 mdl <- lm(V1 ~ poly(V6, 3) + poly(V3, 2), data = dat)
 summary(mdl)
 broom::augment(mdl) %>% 
     ggplot(aes(.fitted, V1)) +
-    geom_point()
+    geom_abline(slope = 1, intercept = 0, color = 'blue') +
+    geom_point(alpha = 0.8) +
+    labs(x = "Fitted Values",
+         title = "Fitted vs True Values for V1",
+         subtitle = "Blue line y = x")
 ```
 
 ```{r}
-mdl2 <- lm(V1 ~ poly(V2, 6) + poly(V3, 2), data = dat)
-summary(mdl2)
-broom::augment(mdl2) %>% 
-    ggplot(aes(.fitted, V1)) +
-    geom_point()
+broom::tidy(mdl, conf.int = TRUE)
+
+# get confidence intervals for fit
+conf_ints <- data.frame(predict(mdl, dat, interval = "confidence")) 
+
+# get prediction intervals for fit
+pred_ints <- data.frame(predict(mdl, dat, interval = "prediction")) 
+
+# plot fitted vs actuals with intervals
+inner_join(pred_ints, conf_ints, by = "fit") %>% 
+    bind_cols(select(dat, V1))
+# %>% 
+#     ggplot(aes(x = fit)) + 
+#         geom_point(aes(y = V1)) +
+#         geom_line(aes(y = conf_int, group = bound)) +
+#         geom_line(aes(y = pred_int, group = bound))
 ```
 
