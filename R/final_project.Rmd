@@ -1,0 +1,281 @@
+---
+title: "Final Project"
+author: "Keith Williams (800690755)"
+date: "11/23/2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      fig.width = 10)
+```
+
+```{r}
+data_file <- '../data/data_6115.txt'
+dat <- read_delim(data_file, delim = "\t")
+glimpse(dat)
+```
+
+# 1.  
+**Write the dataset to a file in excel format**  
+
+```{r}
+# note: dir.exists() requires R > 3.2.0
+data_path <- '../data'
+out_filename <- 'out_data.csv'
+if (!dir.exists(data_path)) {
+    dir.create(data_path)
+}
+write.csv(dat, file.path(data_path, out_filename))
+```
+
+# 2.  
+**Find the sample correlation between the response and each of the covariates**  
+
+```{r}
+cormat <- dat %>% 
+    cor(use = "complete.obs")
+cormat[upper.tri(cormat)] <- NA
+
+cormat %>% 
+    reshape2::melt(na.rm = TRUE) %>%
+    ggplot(aes(Var2, Var1, fill = value)) +
+    geom_tile(color = 'gray90') +
+    geom_text(aes(label = round(value, 3))) +
+    scale_fill_gradient2(low = "#67a9cf", 
+                         high = "#ef8a62", 
+                         limit = c(-1, 1), 
+                         name = "correlation") +
+    coord_equal() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+          panel.background = element_blank()) +
+    ggtitle("Correlation Matrix")
+    
+# print just V1 correlations
+cormat[2:6, 1]
+```
+
+#3.  
+**Propose an initial model to fit the dataset**  
+
+```{r}
+linear_model <- lm(V1 ~ ., data = dat)
+summary(linear_model)
+
+broom::augment(linear_model) %>% 
+    ggplot(aes(.fitted, V1)) +
+    geom_point(alpha = 0.6) +
+    geom_abline(slope = 1, intercept = 0, color = "blue") +
+    labs(x = "fitted values", 
+         title = "Linear Model all variables")
+```
+
+Not surprisingly, the three variables most correlated with `V1` yield significant coefficient estimates. The $R^2$ value is 0.6916, which should be improved.  
+
+# Explore  
+```{r}
+# histograms of each variable
+dat %>% 
+    gather("variable", "value") %>% 
+    ggplot(aes(value)) +
+    geom_histogram(bins = 15) +
+    facet_wrap(~variable, nrow = 1, scales = "free")
+```
+
+So, the response variable `V1` appears to be normally distributed. `V2` looks somewhat uniform, `V3` and `V4` normal but with different variances, `V5` skewed right, looks maybe poisson, and `V6` looks skweed right between 0 and 1.
+
+```{r}
+# scatter plots vs V1
+# fit loess smoothing to each plot
+dat %>% 
+    gather("predictor", "x", 2:6) %>% 
+    ggplot(aes(x, V1)) + 
+    geom_point() +
+    geom_smooth(method = "loess") +
+    facet_wrap(~predictor, nrow = 1, scales = 'free_x')
+```
+
+Looks like `V2` and `V6` are cubic, while `V3` is quadratic. `V4` and `V5` require more investigation. Let's look at transformations of `V5`.  
+
+```{r}
+ggplot(dat, aes(sqrt(V5), V1)) + geom_point() + geom_smooth()
+```
+
+Looks like a clearer relationship after square root transformation.
+
+```{r}
+# Is V5 dependendent on one of the other variables?
+dat %>% 
+    gather("variable", "value", V3, V4) %>% 
+    ggplot(aes(value, V5)) +
+    geom_point() +
+    geom_smooth() +
+    facet_wrap(~variable, nrow = 1, scales = "free_x")
+```
+
+Looks like `V5` might be a quadratic function of `V4` plus heteroskedastic error. Try to simulate this result.  
+
+```{r}
+dat %>% 
+    mutate(V5_synth = map_dbl(V4, ~.x^2 + runif(1, max = abs(.x)))) %>% 
+    gather("V", "y", V5, V5_synth) %>%  
+    ggplot(aes(V4, y)) +
+    geom_point() +
+    geom_line(aes(y = V4^2), color = "blue") +
+    facet_wrap(~V) +
+    labs(title = "Actual V5 and attempt to recreate V5",
+         subtitle = "Blue line represents V4^2")
+```
+
+This isn't quite right, but its close. `V5` is nonnegative, becaue it is the result of a square + some positive random error.
+
+So `V5` is a quadratic function of `V4`. But it's not just a synthesis from V4 + noise, the error is heteroskedastic, increasing with distance from 0. Next, investigate `V4`  
+
+```{r}
+# hypothesis that V4 = V3 * V2
+dat %>% 
+    mutate(V4_div_V2 = V4 / V2) %>% 
+    gather("predictor", "value", V3, V4_div_V2) %>% 
+    ggplot(aes(value, V1)) +
+    geom_point() + 
+    geom_smooth(method = "loess") +
+    facet_wrap(~predictor) +
+    labs(title = "V1 vs V3 and V4 / V2",
+         subtitle = "Plots identitical")
+```
+
+```{r}
+# show that V3 = V4 / V2
+dat %>% 
+    mutate(V4_div_V2 = V4 / V2) %>% 
+    ggplot(aes(V3, V4_div_V2)) +
+    geom_abline(slope = 1, intercept = 0, color = 'blue', linetype = "dashed") +
+    geom_point() +
+    labs(y = "V4 / V2",
+         title = "V4 = V3 * V2")
+```
+
+So, if $\frac{V_4}{V_2} = V_3$, then $V_4 = V_3V_2$
+
+`V6` appears to be a transformation of `V2`  
+```{r}
+ggplot(dat, aes(V2, V6)) + geom_point() + geom_smooth()
+```
+
+Test hypothesis that `V6` is a quadratic function of `V2`
+
+```{r}
+ggplot(dat, aes(V2^2, V6)) + 
+    geom_abline(slope = 1, intercept = 0, color = 'blue', linetype = 'dashed') +
+    geom_point() +
+    labs(title = "V2^2 vs V6",
+         subtitle = "y = x")
+```
+
+So, $V6 = V2^2$  
+
+### Hypothesis so far  
+So, we can relabel our data set:  
+- `V2` random uniform  
+- `V3` random normal  
+- `V4` = `V2 * V3`  
+- `V5` = `V4^2 + e`  
+- `V6` = `V2^2`  
+
+# 4.  
+**Refined model based on exploratory analysis**  
+
+```{r}
+mdl <- lm(V1 ~ poly(V3, 2) + poly(V6, 3), data = dat)
+summary(mdl)
+broom::augment(mdl) %>% 
+    ggplot(aes(.fitted, V1)) +
+    geom_abline(slope = 1, intercept = 0, color = 'blue') +
+    geom_point(alpha = 0.8) +
+    labs(x = "Fitted Values",
+         title = "Fitted vs True Values for V1",
+         subtitle = "Blue line y = x")
+```
+
+```{r}
+# get confidence intervals for fit
+conf_ints <- data.frame(predict(mdl, dat, interval = "confidence")) %>% 
+    rename(lwr_c = lwr, upr_c = upr)
+
+# get prediction intervals for fit
+pred_ints <- data.frame(predict(mdl, dat, interval = "prediction")) %>% 
+    rename(lwr_p = lwr, upr_p = upr)
+
+# plot fitted vs actuals with intervals
+inner_join(pred_ints, conf_ints, by = "fit") %>% 
+    bind_cols(select(dat, V1), .) %>% 
+    gather("bound", "value", lwr_p:upr_c) %>% 
+    mutate(interval = ifelse(grepl("p$", bound), 
+                             "prediction", 
+                             "confidence")) %>%
+    ggplot(aes(x = fit)) +
+        geom_point(aes(y = V1), alpha = 0.2) +
+        geom_line(aes(y = value, group = bound, color = interval)) +
+    labs(x = "Fitted Value",
+         title = "Fitted vs Actuals with Intervals")
+```
+
+# 5.  
+**Attempt to Improve Model Further**  
+
+It is unlikely that the model can be improved further, as it is likely the remaining error is due to irreducible error. However, an attempt will be made by using regularized regression.  
+
+```{r}
+# random seed for reproducibility
+set.seed(6115)
+
+# use 5-fold cross validation to choose lambda for ridge regression
+doMC::registerDoMC(cores=4)
+
+# model matrix
+X = cbind(poly(dat$V3, 2), poly(dat$V6, 3))
+y = dat$V1
+
+# fit ridge regression (L2 penalty)
+ridge <- glmnet::cv.glmnet(X, y, 
+                           alpha = 0, 
+                           nfolds = 5,
+                           nlambda = 200,
+                           parallel = TRUE)
+
+# get ridge predictions
+ridge_predictions <- predict(ridge, newx = X, s = "lambda.min")
+
+# compare RMSE
+(rmse <- c("RMSE_lm" = sqrt(mean(mdl$residuals^2)),
+          "RMSE_ridge" = sqrt(mean((ridge_predictions - y)^2))))
+```
+
+It appears the ridge penalty adds too much bias. Visualize:  
+
+```{r}
+data_frame(V1 = dat$V1,
+           lm = mdl$fitted.values,
+           ridge = as.numeric(ridge_predictions)) %>% 
+    gather("model", "yhat", lm, ridge) %>% 
+    ggplot(aes(yhat, V1)) +
+    geom_abline(slope = 1, intercept = 0, color = 'blue') +
+    geom_point(alpha = 0.5) +
+    facet_wrap(~model) +
+    ggtitle("Fitted vs Actuals by model type")
+```
+
+From the two plots, one can see the bias in ridge. The predictions are too low for small values of `V1` and too high for larger values of `V1`. This confirms that the model cannot be improved, and that the remaining error is due to random noise.  
+
+# 5.  
+**Final Model**
+
+$$V_1 = 1.203 - 1.770 V_3 + 17.030 V_3^2 - 11.696 V_6 - 6.012 V_6^2 + 12.032 V_6^3 + u_i$$
+
+```{r}
+# estimates with 95% confidence intervals
+knitr::kable(broom::tidy(mdl, conf.int = TRUE))
+```
+
+*Note that all coefficient estimates are statistically significant*
